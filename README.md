@@ -85,9 +85,9 @@ pip install -r requirements.txt
 Create or update the `.env` file in the root directory:
 
 ```env
-TWILIO_ACCOUNT_SID=ACfd298162bf6b0ade1004c3c25f8f4055
+TWILIO_ACCOUNT_SID=your_twilio_account_sid_here
 TWILIO_AUTH_TOKEN=your_auth_token_here
-TWILIO_PHONE_NUMBER=+17372508034
+TWILIO_PHONE_NUMBER=your_twilio_phone_number_here
 RENDER_WEBHOOK_URL=https://driver-pickup-reminder-agent.onrender.com
 EXCEL_FILE_PATH=Sample_Driver_Pickup_Schedule V2.xlsx
 CHECK_INTERVAL_SECONDS=60
