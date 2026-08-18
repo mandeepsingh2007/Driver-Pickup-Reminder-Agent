@@ -97,7 +97,7 @@ REMINDER_MINUTES_BEFORE=30
 ### Step 4: Run the Agent
 
 ```bash
-# Ensure virtual environment is active
+venv\Scripts\activate
 python agent.py
 ```
 
