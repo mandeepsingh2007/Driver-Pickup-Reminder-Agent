@@ -1,0 +1,7 @@
+twilio
+flask
+gunicorn
+openpyxl
+python-dotenv
+colorama
+tzdata
