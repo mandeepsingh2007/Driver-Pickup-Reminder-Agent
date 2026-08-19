@@ -2,7 +2,7 @@
 
 An automated agent that reminds drivers about upcoming pickups by calling them 30 minutes before the scheduled pickup time via Twilio. It reads the driver schedule, makes the call, plays a voice reminder, updates the schedule with the result, and logs every attempt.
 
-The schedule can come from either a **local Excel file** (included in this repo — no setup, just clone and run) or a **live Google Sheet**. See [Step 3](#step-3-choose-your-schedule-source).
+The schedule can live in a **local Excel file** (included in this repo — no setup, just clone and run), a **live Google Sheet**, or both. By default the agent watches whichever you have set up, so you never have to reconfigure it to switch. See [Step 3](#step-3-choose-your-schedule-source).
 
 ---
 
@@ -85,14 +85,20 @@ pip install -r requirements.txt
 
 ### Step 3: Choose Your Schedule Source
 
-Set `SHEET_BACKEND` in `.env` to pick where the schedule is read from. Everything else in the app is identical either way.
+**By default (`SHEET_BACKEND=auto`) you don't have to choose.** The agent watches every source that is set up and acts on whichever one you actually edited — no `.env` change needed to switch between them. A source counts as set up when its file or credentials are present, so a fresh clone with no Google service account simply runs on Excel.
+
+If the same ride appears in both (same phone and pickup time), the driver is called **once** and the status is written back to **both**, keeping the two copies in sync.
+
+Set `SHEET_BACKEND` to `excel` or `google` only if you want to pin it to one source.
 
 | | **Option A — Excel** | **Option B — Google Sheet** |
 |---|---|---|
-| `SHEET_BACKEND` | `excel` *(default)* | `google` |
+| Pin with `SHEET_BACKEND` | `excel` | `google` |
 | Setup needed | **None** — file is in this repo | Google Cloud project + service account |
 | Time to first run | ~1 minute | ~10 minutes |
 | Best for | **Testing and reviewing this project** | Matching the task spec; required for cloud runs |
+
+Both are watched automatically under the default `auto`.
 
 ---
 
@@ -112,7 +118,7 @@ This matches the task's stated input and is what the cloud scheduler needs, but 
 2. Create a **Service Account** → **Keys** → **Add Key → JSON**. Save the downloaded file as `service_account.json` in the project root.
 3. Open your Google Sheet → **Share** → add the service account's email (`name@project.iam.gserviceaccount.com`) as an **Editor**. Skipping this is the most common cause of a permission error.
 4. Copy the sheet ID from its URL: `https://docs.google.com/spreadsheets/d/`**`<SHEET_ID>`**`/edit`.
-5. In `.env`, set `SHEET_BACKEND=google` and `GOOGLE_SHEET_ID=<SHEET_ID>`.
+5. In `.env`, set `GOOGLE_SHEET_ID=<SHEET_ID>`. That is enough — under the default `auto` the sheet is picked up as soon as the ID and key file are present.
 
 To create the sheet quickly, import the included `.xlsx`: in Google Sheets, **File → Import → Upload**, then **Replace spreadsheet**. Format the `Scheduled Pickup Time` column as **plain text** so Google doesn't reformat the timestamps.
 
@@ -128,13 +134,13 @@ TWILIO_AUTH_TOKEN=your_auth_token_here
 TWILIO_PHONE_NUMBER=+17372508034
 RENDER_WEBHOOK_URL=https://driver-pickup-reminder-agent.onrender.com
 
-# Schedule source: "excel" (default, no setup) or "google"
-SHEET_BACKEND=excel
+# Schedule source: "auto" (default, watches both), "excel", or "google"
+SHEET_BACKEND=auto
 
-# Used when SHEET_BACKEND=excel
+# Used when SHEET_BACKEND is excel or auto
 EXCEL_FILE_PATH=Sample_Driver_Pickup_Schedule V2.xlsx
 
-# Used when SHEET_BACKEND=google (see Option B)
+# Used when SHEET_BACKEND is google or auto (see Option B)
 GOOGLE_SERVICE_ACCOUNT_JSON=service_account.json
 GOOGLE_SHEET_ID=
 GOOGLE_WORKSHEET_NAME=
@@ -143,7 +149,7 @@ CHECK_INTERVAL_SECONDS=60
 REMINDER_MINUTES_BEFORE=30
 ```
 
-Only the block matching your chosen `SHEET_BACKEND` needs real values — the other can stay blank.
+Under `auto`, fill in whichever block you actually use — the other can stay blank and is simply not watched.
 
 ### Step 5: Run the Agent
 
@@ -162,8 +168,9 @@ Console Output Example:
 [SUCCESS] Configuration validated successfully.
 
 [CONFIG] Configuration Details:
-  Schedule Source: excel
+  Schedule Source: auto -> watching excel, google
   Excel File     : Sample_Driver_Pickup_Schedule V2.xlsx
+  Google Sheet ID: 1AbC...xYz
   Webhook URL    : https://driver-pickup-reminder-agent.onrender.com
   Check Interval : 60 seconds
   Reminder Before: 30 minutes
@@ -193,7 +200,7 @@ Cycle #1 | 2026-08-19 00:05:06 IST
 
 ## Testing Guide: End-to-End Test With Your Mobile Number
 
-Follow these steps to run a live test call to your own phone. This uses **Option A (Excel)** — no Google setup required.
+Follow these steps to run a live test call to your own phone. This uses the Excel file — no Google setup required.
 
 ### 1. Verify Phone Number (Twilio Free Trial Accounts)
 If using a Twilio Free Trial account, Twilio only allows calling numbers that have been verified in your account:
@@ -211,7 +218,7 @@ If using a Twilio Free Trial account, Twilio only allows calling numbers that ha
   - `Reminder Status` → `Pending`.
 - **Save and close the file** — the agent can't update a row while Excel holds the file open.
 
-*(On Option B, edit the Google Sheet instead — no saving needed, the agent reads it live.)*
+*(You can edit the Google Sheet instead if you set one up — no saving needed, the agent reads it live. Under the default `auto` mode both are watched, so either works without changing any config.)*
 
 ### 3. Start the Agent
 In your terminal, run:
@@ -241,7 +248,7 @@ python agent.py --once   # scan once, act, then exit
 
 **Why this matters:** the always-on loop only survives while your laptop is awake and the terminal is open. If the machine sleeps or the process dies, no driver gets called for that window — and nobody finds out. A cloud scheduler removes that single point of failure.
 
-**This requires `SHEET_BACKEND=google`.** Each scheduled run happens on a fresh, throwaway machine, so a status written to a local Excel file would vanish — and the same driver would be called again on the next run. The Google Sheet keeps that state in the cloud.
+**Set `SHEET_BACKEND=google` for cloud runs.** Each scheduled run happens on a fresh, throwaway machine, so a status written to a local Excel file would vanish — and the same driver would be called again on the next run. The Google Sheet keeps that state in the cloud.
 
 **Free option — GitHub Actions** (included at `.github/workflows/reminder-agent.yml`): runs `--once` every 5 minutes.
 1. In your repo: **Settings → Secrets and variables → Actions**, add `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_PHONE_NUMBER`, `RENDER_WEBHOOK_URL`, `GOOGLE_SHEET_ID`, and `GOOGLE_SERVICE_ACCOUNT_JSON` (paste the whole JSON key).

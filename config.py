@@ -18,16 +18,17 @@ TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER", "")
 RENDER_WEBHOOK_URL = os.getenv("RENDER_WEBHOOK_URL", "http://localhost:5000")
 
 # ─── Schedule Source ───
-# "excel"  = local .xlsx file (default). Zero setup — best for testing.
-# "google" = live Google Sheet via the Sheets API. Matches the task spec, and
-#            is required for cloud/cron runs where there is no local disk to
-#            persist the reminder status to.
-SHEET_BACKEND = os.getenv("SHEET_BACKEND", "excel").strip().lower()
+# "auto"   = watch every source that is configured (default). Edit whichever
+#            schedule you like; no .env change is needed to switch.
+# "excel"  = local .xlsx file only.
+# "google" = live Google Sheet only. Required for cloud/cron runs, where there
+#            is no local disk to persist the reminder status to.
+SHEET_BACKEND = os.getenv("SHEET_BACKEND", "auto").strip().lower()
 
-# ─── Excel file (used when SHEET_BACKEND=excel) ───
+# ─── Excel file (used when SHEET_BACKEND is excel or auto) ───
 EXCEL_FILE_PATH = os.getenv("EXCEL_FILE_PATH", "Sample_Driver_Pickup_Schedule V2.xlsx")
 
-# ─── Google Sheet (used when SHEET_BACKEND=google) ───
+# ─── Google Sheet (used when SHEET_BACKEND is google or auto) ───
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "service_account.json")
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "")
 GOOGLE_WORKSHEET_NAME = os.getenv("GOOGLE_WORKSHEET_NAME", "")  # blank = first worksheet
@@ -59,12 +60,23 @@ def validate_config():
         )
 
     # Validate the selected schedule source
-    if SHEET_BACKEND not in ("excel", "google"):
+    if SHEET_BACKEND not in ("auto", "excel", "google"):
         raise ValueError(
-            f"SHEET_BACKEND must be 'excel' or 'google' (got '{SHEET_BACKEND}')."
+            f"SHEET_BACKEND must be 'auto', 'excel' or 'google' (got '{SHEET_BACKEND}')."
         )
 
-    if SHEET_BACKEND == "excel":
+    if SHEET_BACKEND == "auto":
+        # At least one source must be usable, otherwise there is nothing to read.
+        has_excel = os.path.exists(EXCEL_FILE_PATH)
+        has_google = bool(GOOGLE_SHEET_ID) and os.path.exists(GOOGLE_SERVICE_ACCOUNT_JSON)
+        if not (has_excel or has_google):
+            raise ValueError(
+                "No schedule source is configured.\n"
+                f"Either place the Excel file at '{EXCEL_FILE_PATH}', or set up "
+                "a Google Sheet (GOOGLE_SHEET_ID + service account). "
+                "See README > Step 3."
+            )
+    elif SHEET_BACKEND == "excel":
         if not os.path.exists(EXCEL_FILE_PATH):
             raise ValueError(
                 f"Excel file not found: '{EXCEL_FILE_PATH}'.\n"

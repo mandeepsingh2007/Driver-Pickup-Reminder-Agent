@@ -1,15 +1,21 @@
 """
 Schedule handler for the Driver Pickup Reminder Agent.
 
-Supports two sources for the driver schedule, chosen with SHEET_BACKEND:
+The driver schedule can live in a local Excel file, a live Google Sheet, or
+both. SHEET_BACKEND picks which are watched:
 
-    SHEET_BACKEND=excel   -> local .xlsx file  (default; no setup, best for testing)
-    SHEET_BACKEND=google  -> live Google Sheet (matches the task spec; required
-                             for cloud/cron runs, since a scheduled run has no
-                             local disk to persist the status to)
+    SHEET_BACKEND=auto    -> watch every source that is configured (default)
+    SHEET_BACKEND=excel   -> local .xlsx file only
+    SHEET_BACKEND=google  -> live Google Sheet only
 
-Both backends expose the same two functions and return the same ride dict, so
-the rest of the app never knows which one is active.
+"auto" is the default so you never have to edit .env to switch: whichever
+schedule you actually edited is the one that gets acted on. A source counts as
+configured when its file/credentials are present, so a checkout with no Google
+service account simply runs on Excel with no errors.
+
+If the same ride (same phone + pickup time) appears in more than one source,
+the driver is called once and the status is written back to every source it
+appeared in.
 
 Expected columns (header in row 1, data from row 2):
   1 Driver Name | 2 Driver Phone Number | 3 Pickup Location
@@ -24,7 +30,7 @@ import config
 
 IST = ZoneInfo(config.TIMEZONE)
 
-# Column positions (1-based), shared by both backends.
+# Column positions (1-based), shared by both sources.
 COL_DRIVER_NAME = 1
 COL_DRIVER_PHONE = 2
 COL_PICKUP_LOCATION = 3
@@ -82,50 +88,59 @@ def _is_due(pickup_dt, now):
             now + timedelta(minutes=minutes + 5))
 
 
-def _build_ride(row_index, name, phone, location, pickup_dt):
-    """Build the normalized ride dict consumed by agent.py."""
-    return {
-        "row_index": row_index,
-        "driver_name": str(name).strip(),
-        "driver_phone": str(phone).strip(),
-        "pickup_location": str(location).strip(),
-        "pickup_time": pickup_dt,
-        "pickup_time_str": pickup_dt.strftime("%I:%M %p"),  # "09:39 PM"
-    }
+def _collect_due_rows(rows, source, now):
+    """
+    Turn raw rows (list of cell lists, row 1 = header) into due-ride dicts.
 
-
-# --------------------------- Excel backend ---------------------------
-
-def _excel_get_pending_rides():
-    from openpyxl import load_workbook
-
-    file_path = config.EXCEL_FILE_PATH
-    if not os.path.exists(file_path):
-        print(f"  [ERROR] Excel file not found: {file_path}")
-        return []
-
-    wb = load_workbook(file_path)
-    ws = wb.active
-    now = datetime.now(IST)
+    Shared by both sources so the "Pending" check, the reminder window and the
+    field validation can never drift apart between them.
+    """
     rides = []
 
-    for row_idx, row in enumerate(ws.iter_rows(min_row=2), start=2):
-        values = [c.value for c in row]
-        values += [None] * (COL_REMINDER_STATUS - len(values))
-        name, phone, location, pickup_time, status = values[:COL_REMINDER_STATUS]
+    for row_idx, row in enumerate(rows[1:], start=2):
+        # Pad short rows so column indexing never raises.
+        cells = list(row) + [None] * (COL_REMINDER_STATUS - len(row))
+        name, phone, location, pickup_time, status = cells[:COL_REMINDER_STATUS]
 
+        # Only "Pending" rows are picked up - this is what stops a driver from
+        # being called twice for the same ride.
         if status is None or str(status).strip().lower() != "pending":
             continue
+
         if not all([name, phone, location, pickup_time]):
-            print(f"  [WARN] Row {row_idx}: Missing required fields, skipping")
+            print(f"  [WARN] {source} row {row_idx}: Missing required fields, skipping")
             continue
 
-        pickup_dt = _parse_pickup_time(pickup_time, f"Row {row_idx}")
-        if pickup_dt and _is_due(pickup_dt, now):
-            rides.append(_build_ride(row_idx, name, phone, location, pickup_dt))
+        pickup_dt = _parse_pickup_time(pickup_time, f"{source} row {row_idx}")
+        if pickup_dt is None or not _is_due(pickup_dt, now):
+            continue
 
-    wb.close()
+        rides.append({
+            "driver_name": str(name).strip(),
+            "driver_phone": str(phone).strip(),
+            "pickup_location": str(location).strip(),
+            "pickup_time": pickup_dt,
+            "pickup_time_str": pickup_dt.strftime("%I:%M %p"),  # "09:39 PM"
+            "targets": [(source, row_idx)],
+        })
+
     return rides
+
+
+# --------------------------- Excel source ---------------------------
+
+def _excel_is_configured():
+    return os.path.exists(config.EXCEL_FILE_PATH)
+
+
+def _excel_read_rows():
+    from openpyxl import load_workbook
+
+    wb = load_workbook(config.EXCEL_FILE_PATH)
+    ws = wb.active
+    rows = [[c.value for c in row] for row in ws.iter_rows()]
+    wb.close()
+    return rows
 
 
 def _excel_can_write():
@@ -163,12 +178,16 @@ def _excel_mark_reminder_status(row_index, status):
     wb.close()
 
 
-# ------------------------ Google Sheets backend ------------------------
+# ------------------------ Google Sheets source ------------------------
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 # Cache the worksheet handle so we authorize only once per process.
 _worksheet = None
+
+
+def _google_is_configured():
+    return bool(config.GOOGLE_SHEET_ID) and os.path.exists(config.GOOGLE_SERVICE_ACCOUNT_JSON)
 
 
 def _get_worksheet():
@@ -189,79 +208,110 @@ def _get_worksheet():
     return _worksheet
 
 
-def _google_get_pending_rides():
-    try:
-        rows = _get_worksheet().get_all_values()  # row 1 is the header
-    except Exception as e:
-        print(f"  [ERROR] Could not read Google Sheet: {e}")
-        return []
-
-    now = datetime.now(IST)
-    rides = []
-
-    for row_idx, row in enumerate(rows[1:], start=2):
-        # Pad short rows so column indexing never raises.
-        cells = row + [""] * (COL_REMINDER_STATUS - len(row))
-        name, phone, location, pickup_time, status = cells[:COL_REMINDER_STATUS]
-
-        if not status or status.strip().lower() != "pending":
-            continue
-        if not all([name, phone, location, pickup_time]):
-            print(f"  [WARN] Row {row_idx}: Missing required fields, skipping")
-            continue
-
-        pickup_dt = _parse_pickup_time(pickup_time, f"Row {row_idx}")
-        if pickup_dt and _is_due(pickup_dt, now):
-            rides.append(_build_ride(row_idx, name, phone, location, pickup_dt))
-
-    return rides
+def _google_read_rows():
+    return _get_worksheet().get_all_values()
 
 
 def _google_mark_reminder_status(row_index, status):
-    try:
-        _get_worksheet().update_cell(row_index, COL_REMINDER_STATUS, status)
-    except Exception as e:
-        print(f"  [ERROR] Could not update Google Sheet row {row_index}: {e}")
+    _get_worksheet().update_cell(row_index, COL_REMINDER_STATUS, status)
+
+
+# --------------------------- source registry ---------------------------
+
+_SOURCES = {
+    "excel": {
+        "is_configured": _excel_is_configured,
+        "read_rows": _excel_read_rows,
+        "can_write": _excel_can_write,
+        "mark": _excel_mark_reminder_status,
+    },
+    "google": {
+        "is_configured": _google_is_configured,
+        "read_rows": _google_read_rows,
+        # Nothing locks a Google Sheet locally; write errors surface per call.
+        "can_write": lambda: True,
+        "mark": _google_mark_reminder_status,
+    },
+}
+
+
+def active_sources():
+    """
+    Which schedule sources this run should watch.
+
+    In "auto" mode that is every source with its file/credentials in place;
+    otherwise it is just the one named by SHEET_BACKEND.
+    """
+    if config.SHEET_BACKEND == "auto":
+        return [n for n, s in _SOURCES.items() if s["is_configured"]()]
+    return [config.SHEET_BACKEND]
 
 
 # ----------------------------- public API -----------------------------
 
-def can_write():
+def get_pending_rides():
     """
-    Whether the reminder status can be persisted right now.
+    Return rides that are "Pending" AND inside the reminder window, across
+    every active source.
+
+    Each ride carries a "targets" list of (source, row_index) pairs saying
+    where its status must be written back. A ride present in more than one
+    source is returned once, with a target for each - so the driver is called
+    once and every copy of the schedule is kept in sync.
+    """
+    now = datetime.now(IST)
+    merged = {}
+
+    for name in active_sources():
+        source = _SOURCES[name]
+        try:
+            rows = source["read_rows"]()
+        except Exception as e:
+            print(f"  [ERROR] Could not read the {name} schedule: {e}")
+            continue
+
+        for ride in _collect_due_rows(rows, name, now):
+            # Same driver + same pickup time = the same real-world ride.
+            key = (ride["driver_phone"], ride["pickup_time"])
+            if key in merged:
+                merged[key]["targets"].extend(ride["targets"])
+            else:
+                merged[key] = ride
+
+    return list(merged.values())
+
+
+def can_write(targets):
+    """
+    Whether the status can be persisted to every target of a ride.
 
     The agent checks this before dialling: if the outcome cannot be recorded,
     placing the call would only get the driver called again on every later
     cycle.
     """
-    if config.SHEET_BACKEND == "google":
-        return True  # no local lock; write errors are reported per call
-    return _excel_can_write()
+    return all(_SOURCES[name]["can_write"]() for name, _ in targets)
 
 
-def get_pending_rides():
+def mark_reminder_status(targets, status):
     """
-    Return rides that are "Pending" AND whose pickup time is inside the
-    reminder window. Each item carries row_index for the status write-back.
-
-    Only rows still marked "Pending" are returned, which is what stops a
-    driver from being called twice for the same ride.
-    """
-    if config.SHEET_BACKEND == "google":
-        return _google_get_pending_rides()
-    return _excel_get_pending_rides()
-
-
-def mark_reminder_status(row_index, status):
-    """
-    Update the Reminder Status cell for a given row (1-based; row 1 is the
-    header).
+    Write the reminder status back to each (source, row_index) target.
 
     Args:
-        row_index (int): The row number to update
+        targets (list): (source, row_index) pairs from a ride dict
         status (str): "Sent", "Failed - No Answer", "Failed - Busy",
                       or "Failed - Error"
+
+    Raises:
+        RuntimeError: if any target could not be updated. The agent reports
+            this rather than letting it kill the cycle.
     """
-    if config.SHEET_BACKEND == "google":
-        return _google_mark_reminder_status(row_index, status)
-    return _excel_mark_reminder_status(row_index, status)
+    failures = []
+
+    for name, row_index in targets:
+        try:
+            _SOURCES[name]["mark"](row_index, status)
+        except Exception as e:
+            failures.append(f"{name} row {row_index}: {e}")
+
+    if failures:
+        raise RuntimeError("; ".join(failures))

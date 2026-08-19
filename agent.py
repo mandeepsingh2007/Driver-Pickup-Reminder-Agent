@@ -26,7 +26,7 @@ if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
 
 import config
-from sheet_handler import get_pending_rides, mark_reminder_status, can_write
+from sheet_handler import get_pending_rides, mark_reminder_status, can_write, active_sources
 from call_handler import (
     make_reminder_call,
     warm_up_webhook,
@@ -43,7 +43,12 @@ CALL_LOGS_FILE = "call_logs.json"
 # Graceful shutdown flag
 running = True
 
-# Rows already called during this run. A status write-back can still fail
+def _ride_key(ride):
+    """Stable identity for a ride: same driver, same pickup time."""
+    return (ride["driver_phone"], ride["pickup_time"])
+
+
+# Rides already called during this run. A status write-back can still fail
 # (e.g. someone opens the Excel file mid-cycle), which would leave the row
 # "Pending" and get the driver called again on every later cycle.
 called_rows = set()
@@ -88,11 +93,12 @@ def print_banner():
 def print_config():
     """Print current configuration."""
     print(f"{Fore.CYAN}[CONFIG] Configuration Details:{Style.RESET_ALL}")
-    print(f"  Schedule Source: {config.SHEET_BACKEND}")
-    if config.SHEET_BACKEND == "google":
-        print(f"  Google Sheet ID: {config.GOOGLE_SHEET_ID}")
-    else:
+    sources = active_sources()
+    print(f"  Schedule Source: {config.SHEET_BACKEND} -> watching {', '.join(sources) or 'nothing'}")
+    if "excel" in sources:
         print(f"  Excel File     : {config.EXCEL_FILE_PATH}")
+    if "google" in sources:
+        print(f"  Google Sheet ID: {config.GOOGLE_SHEET_ID}")
     print(f"  Webhook URL    : {config.RENDER_WEBHOOK_URL}")
     print(f"  Check Interval : {config.CHECK_INTERVAL_SECONDS} seconds")
     print(f"  Reminder Before: {config.REMINDER_MINUTES_BEFORE} minutes")
@@ -117,7 +123,7 @@ def process_ride(ride):
     driver_phone = ride["driver_phone"]
     pickup_location = ride["pickup_location"]
     pickup_time_str = ride["pickup_time_str"]
-    row_index = ride["row_index"]
+    targets = ride["targets"]
 
     print(f"\n{Fore.YELLOW}[CALL] Initiating reminder for {driver_name} ({driver_phone}){Style.RESET_ALL}")
     print(f"       Pickup Location : {pickup_location}")
@@ -125,12 +131,15 @@ def process_ride(ride):
 
     # Step 1: Make the call
     call_sid = make_reminder_call(driver_name, driver_phone, pickup_location, pickup_time_str)
-    called_rows.add(row_index)
+    called_rows.add(_ride_key(ride))
 
     if not call_sid:
         # Call initiation failed
         reminder_status = "Failed - Error"
-        mark_reminder_status(row_index, reminder_status)
+        try:
+            mark_reminder_status(targets, reminder_status)
+        except Exception as e:
+            print(f"       {Fore.RED}[ERROR] Could not write status: {e}{Style.RESET_ALL}")
         log_entry = {
             "timestamp": now.isoformat(),
             "driver_name": driver_name,
@@ -154,10 +163,10 @@ def process_ride(ride):
     # Step 3: Map status and update the schedule
     reminder_status = map_call_status_to_reminder_status(final_status)
     try:
-        mark_reminder_status(row_index, reminder_status)
+        mark_reminder_status(targets, reminder_status)
     except Exception as e:
         print(f"       {Fore.RED}[ERROR] Could not write status to the schedule: {e}{Style.RESET_ALL}")
-        print(f"       {Fore.YELLOW}[INFO] Row {row_index} stays 'Pending'; this run will not call it again.{Style.RESET_ALL}")
+        print(f"       {Fore.YELLOW}[INFO] Row stays 'Pending'; this run will not call it again.{Style.RESET_ALL}")
 
     # Step 4: Log the result
     log_entry = {
@@ -169,6 +178,7 @@ def process_ride(ride):
         "call_sid": call_sid,
         "call_status": final_status,
         "reminder_status": reminder_status,
+        "sources": [name for name, _ in targets],
     }
     save_call_log(log_entry)
 
@@ -208,8 +218,8 @@ def run_check_cycle(cycle_count):
         return
 
     # Drop rows already dialled in this run (see called_rows).
-    repeats = [r for r in pending_rides if r["row_index"] in called_rows]
-    pending_rides = [r for r in pending_rides if r["row_index"] not in called_rows]
+    repeats = [r for r in pending_rides if _ride_key(r) in called_rows]
+    pending_rides = [r for r in pending_rides if _ride_key(r) not in called_rows]
     if repeats:
         print(f"  {Fore.YELLOW}[SKIP] {len(repeats)} ride(s) already called this run "
               f"(status write-back failed).{Style.RESET_ALL}")
@@ -220,7 +230,8 @@ def run_check_cycle(cycle_count):
 
     # Refuse to dial if the outcome cannot be recorded. Calling anyway would
     # leave the row "Pending" and the driver would be called again and again.
-    if not can_write():
+    unwritable = [r for r in pending_rides if not can_write(r["targets"])]
+    if unwritable:
         print(f"  {Fore.RED}[SKIP] Schedule is not writable right now - no calls placed.{Style.RESET_ALL}")
         if config.SHEET_BACKEND == "excel":
             print(f"  {Fore.YELLOW}       Close '{config.EXCEL_FILE_PATH}' in Excel and it will retry next cycle.{Style.RESET_ALL}")
