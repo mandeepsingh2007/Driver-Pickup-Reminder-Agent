@@ -327,15 +327,31 @@ Only rows marked `Pending` are ever picked up, so a driver is never called twice
 
 ## Future Scope (v2 Improvements)
 
+Ordered by impact per unit of effort. The first three form a single story: v1 *sends* a reminder, v2 *gets a commitment* and acts when it doesn't come.
+
+### Highest impact
+
 | Feature | Description |
 |---------|-------------|
-| **Call Confirmation (DTMF)** | Let the driver press 1 to confirm / 2 to decline during the call, and record the response back to the schedule. |
-| **Multi-channel Fallback** | Send a WhatsApp/SMS reminder first (cheaper, and drivers read it), falling back to a voice call if unconfirmed. |
-| **Multilingual Voice** | A `Language` column driving Hindi or regional TTS voices, so the reminder is actually understood. |
-| **Escalation Management** | Retry unanswered calls with backoff, then alert a fleet manager if the driver still can't be reached. |
-| **Travel-time-aware Timing** | Use a maps API to remind the driver when they need to *leave*, accounting for live traffic, instead of a fixed 30 minutes. |
-| **Conversational AI** | Bi-directional voice conversation so the driver can ask questions or reschedule. |
-| **Analytics Dashboard** | Web dashboard for real-time fleet call status, plus which drivers repeatedly miss reminders. |
+| **Call Confirmation (DTMF)** | Let the driver press 1 to confirm / 2 to decline during the call (`<Gather>`), recorded back to the schedule as `Confirmed` / `Declined`. Operators who make trip acknowledgement mandatory report no-show rates falling from 5–8% to under 1%. Twilio's guidance is to accept speech alongside the keypad ("say or press 1") so the call still works when DTMF doesn't. A `Declined` gives dispatch 30 minutes to find another driver, instead of finding out when the customer calls. |
+| **Connect the Driver to the Customer** | The reminder already tells the driver to call their customer — but they're driving and won't go hunting for the number. Add a `Customer Phone` column and a "press 3 to be connected now" option that `<Dial>`s the customer within the same call. Routing through the Twilio number also masks both real numbers, which is how dispatch systems normally handle this. |
+| **Escalation Management** | `Failed - No Answer` is logged today, but nothing *reads* that log. Retry with backoff (+3 min, +5 min), then alert a fleet manager by SMS/call so a missed reminder surfaces before the customer complains. Dispatch systems escalate unacknowledged assignments to a coordinator after a configurable timeout. |
+
+### India-specific wins
+
+| Feature | Description |
+|---------|-------------|
+| **Multi-channel Fallback** | Send a WhatsApp reminder first (pickup details, Maps link, Confirm button), falling back to a voice call if unconfirmed. India is WhatsApp's largest market at ~535M monthly users, and its ~98% open rate beats SMS — plus the details stay readable on the driver's phone, which a voice message never does. Also cheaper per reminder. |
+| **Multilingual Voice** | A `Language` column driving Hindi or regional TTS voices (e.g. `Polly.Kajal`) instead of only `en-IN`, so the reminder is understood rather than merely delivered. |
+| **Travel-time-aware Timing** | Replace the fixed 30 minutes with "you need to leave now": pass `departure_time` to the Google Distance Matrix API and use the returned `duration_in_traffic`. Gurugram to Delhi Airport is not the same trip at 6 PM and at 2 AM. Note this reads traffic between two known points — it is not driver GPS tracking, which stays out of scope. |
+
+### AI-forward
+
+| Feature | Description |
+|---------|-------------|
+| **Post-call Transcription + Intent Extraction** | Record the call (with consent), transcribe it (Whisper/Deepgram), and have an LLM extract what actually happened — did the driver confirm, is the vehicle down, are they unwell — then update the schedule automatically. A middle step between a fixed script and a full voice bot: the driver answers naturally, no keypad needed. |
+| **Conversational AI** | Full bi-directional voice conversation so the driver can ask questions or reschedule. |
+| **Analytics Dashboard** | Live fleet call status, plus what the logs already contain but nobody reads: which drivers repeatedly miss reminders, which time slots have the worst answer rate, which pickup locations run late. |
 
 ---
 
