@@ -271,8 +271,9 @@ def get_pending_rides():
             continue
 
         for ride in _collect_due_rows(rows, name, now):
-            # Same driver + same pickup time = the same real-world ride.
-            key = (ride["driver_phone"], ride["pickup_time"])
+            # Same driver + same pickup minute = the same real-world ride across Excel and Google Sheets.
+            time_key = ride["pickup_time"].strftime("%Y-%m-%d %H:%M") if hasattr(ride["pickup_time"], "strftime") else str(ride["pickup_time"])
+            key = (ride["driver_phone"], time_key)
             if key in merged:
                 merged[key]["targets"].extend(ride["targets"])
             else:

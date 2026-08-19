@@ -56,6 +56,20 @@ def voice():
     return Response(str(response), mimetype="application/xml")
 
 
+@app.route("/call-status", methods=["POST"])
+def call_status():
+    """
+    Status callback endpoint for Twilio call events.
+    Logs call completion, no-answer, busy, or failure events.
+    """
+    call_sid = request.values.get("CallSid", "")
+    call_status_val = request.values.get("CallStatus", "")
+    to_number = request.values.get("To", "")
+
+    print(f"[TWILIO CALLBACK] CallSid: {call_sid} | To: {to_number} | Status: {call_status_val}")
+    return {"status": "received", "call_sid": call_sid, "call_status": call_status_val}
+
+
 @app.route("/health", methods=["GET"])
 def health():
     """Health check endpoint for Render."""

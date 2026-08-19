@@ -64,10 +64,13 @@ def make_reminder_call(driver_name, driver_phone, pickup_location, pickup_time_s
     voice_url = f"{config.RENDER_WEBHOOK_URL}/voice?{query_params}"
     
     try:
+        status_callback_url = f"{config.RENDER_WEBHOOK_URL}/call-status"
         call = client.calls.create(
             to=driver_phone,
             from_=config.TWILIO_PHONE_NUMBER,
             url=voice_url,
+            status_callback=status_callback_url,
+            status_callback_event=["completed", "no-answer", "busy", "failed"],
         )
         return call.sid
     except Exception as e:
