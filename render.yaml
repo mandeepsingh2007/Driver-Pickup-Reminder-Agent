@@ -15,6 +15,9 @@ services:
   # Render Cron Jobs are a paid feature — if you're on the free tier, use the
   # GitHub Actions workflow at .github/workflows/reminder-agent.yml instead.
   #
+  # Needs SHEET_BACKEND=google: a cron job's filesystem is ephemeral, so a
+  # status written to the local Excel file would not survive to the next run.
+  #
   # - type: cron
   #   name: mr-cabie-agent
   #   runtime: python
@@ -24,6 +27,8 @@ services:
   #   envVars:
   #     - key: PYTHON_VERSION
   #       value: "3.12"
+  #     - key: SHEET_BACKEND
+  #       value: google
   #     # Set the rest (TWILIO_*, RENDER_WEBHOOK_URL, GOOGLE_SHEET_ID,
   #     # GOOGLE_SERVICE_ACCOUNT_JSON) as environment variables / secret files
   #     # in the Render dashboard.

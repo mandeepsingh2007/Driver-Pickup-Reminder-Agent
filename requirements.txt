@@ -4,8 +4,10 @@ gunicorn
 python-dotenv
 colorama
 tzdata
-# Google Sheets access
+# Excel schedule source (SHEET_BACKEND=excel)
+openpyxl
+# Google Sheet schedule source (SHEET_BACKEND=google)
 gspread
 google-auth
-# Flexible pickup-time parsing for Google Sheets date strings
+# Flexible pickup-time parsing
 python-dateutil

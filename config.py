@@ -17,9 +17,17 @@ TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER", "")
 # ─── Webhook URL (Render deployment) ───
 RENDER_WEBHOOK_URL = os.getenv("RENDER_WEBHOOK_URL", "http://localhost:5000")
 
-# ─── Google Sheets ───
-# The schedule lives in a live Google Sheet. Keeping the status in the cloud
-# (rather than a local file) is what lets the agent run on a cron schedule.
+# ─── Schedule Source ───
+# "excel"  = local .xlsx file (default). Zero setup — best for testing.
+# "google" = live Google Sheet via the Sheets API. Matches the task spec, and
+#            is required for cloud/cron runs where there is no local disk to
+#            persist the reminder status to.
+SHEET_BACKEND = os.getenv("SHEET_BACKEND", "excel").strip().lower()
+
+# ─── Excel file (used when SHEET_BACKEND=excel) ───
+EXCEL_FILE_PATH = os.getenv("EXCEL_FILE_PATH", "Sample_Driver_Pickup_Schedule V2.xlsx")
+
+# ─── Google Sheet (used when SHEET_BACKEND=google) ───
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "service_account.json")
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "")
 GOOGLE_WORKSHEET_NAME = os.getenv("GOOGLE_WORKSHEET_NAME", "")  # blank = first worksheet
@@ -50,19 +58,32 @@ def validate_config():
             f"Please set them in your .env file. See .env.example for reference."
         )
 
-    # Validate Google Sheets access
-    sheet_missing = []
-    if not GOOGLE_SHEET_ID:
-        sheet_missing.append("GOOGLE_SHEET_ID")
-    if not os.path.exists(GOOGLE_SERVICE_ACCOUNT_JSON):
-        sheet_missing.append(f"service account file '{GOOGLE_SERVICE_ACCOUNT_JSON}'")
-
-    if sheet_missing:
+    # Validate the selected schedule source
+    if SHEET_BACKEND not in ("excel", "google"):
         raise ValueError(
-            f"Google Sheets is not configured — missing: {', '.join(sheet_missing)}.\n"
-            "Create a Google Cloud service account, download its JSON key, "
-            "share the sheet with the service account email, and set "
-            "GOOGLE_SHEET_ID. See README > Google Sheets Setup."
+            f"SHEET_BACKEND must be 'excel' or 'google' (got '{SHEET_BACKEND}')."
         )
+
+    if SHEET_BACKEND == "excel":
+        if not os.path.exists(EXCEL_FILE_PATH):
+            raise ValueError(
+                f"Excel file not found: '{EXCEL_FILE_PATH}'.\n"
+                "Set EXCEL_FILE_PATH in your .env, or switch to the Google "
+                "Sheet source with SHEET_BACKEND=google."
+            )
+    else:
+        sheet_missing = []
+        if not GOOGLE_SHEET_ID:
+            sheet_missing.append("GOOGLE_SHEET_ID")
+        if not os.path.exists(GOOGLE_SERVICE_ACCOUNT_JSON):
+            sheet_missing.append(f"service account file '{GOOGLE_SERVICE_ACCOUNT_JSON}'")
+        if sheet_missing:
+            raise ValueError(
+                "SHEET_BACKEND=google but the following are missing: "
+                f"{', '.join(sheet_missing)}.\n"
+                "Create a Google Cloud service account, download its JSON key, "
+                "share the sheet with the service account email, and set "
+                "GOOGLE_SHEET_ID. See README > Option B."
+            )
 
     return True

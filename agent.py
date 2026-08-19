@@ -2,11 +2,11 @@
 Driver Pickup Reminder Agent — Main Scheduler (v1)
 
 This is the main entry point that runs locally. It:
-1. Reads the Google Sheet every CHECK_INTERVAL_SECONDS
+1. Reads the schedule (Excel file or Google Sheet) every CHECK_INTERVAL_SECONDS
 2. Finds rides with pickup time approximately 30 minutes from now
 3. Triggers Twilio calls for each matching ride
 4. Polls Twilio API for call completion status
-5. Updates the Google Sheet with the reminder status
+5. Updates the schedule with the reminder status
 6. Logs all call attempts to call_logs.json
 """
 
@@ -83,7 +83,11 @@ def print_banner():
 def print_config():
     """Print current configuration."""
     print(f"{Fore.CYAN}[CONFIG] Configuration Details:{Style.RESET_ALL}")
-    print(f"  Google Sheet ID: {config.GOOGLE_SHEET_ID}")
+    print(f"  Schedule Source: {config.SHEET_BACKEND}")
+    if config.SHEET_BACKEND == "google":
+        print(f"  Google Sheet ID: {config.GOOGLE_SHEET_ID}")
+    else:
+        print(f"  Excel File     : {config.EXCEL_FILE_PATH}")
     print(f"  Webhook URL    : {config.RENDER_WEBHOOK_URL}")
     print(f"  Check Interval : {config.CHECK_INTERVAL_SECONDS} seconds")
     print(f"  Reminder Before: {config.REMINDER_MINUTES_BEFORE} minutes")
@@ -185,8 +189,8 @@ def run_check_cycle(cycle_count):
     print(f"{Fore.CYAN}Cycle #{cycle_count} | {now.strftime('%Y-%m-%d %H:%M:%S IST')}{Style.RESET_ALL}")
     print(f"{Fore.CYAN}--------------------------------------------------------------{Style.RESET_ALL}")
 
-    # Read pending rides from the Google Sheet
-    print(f"  [INFO] Scanning Google Sheet for pending rides...")
+    # Read pending rides from the configured schedule source
+    print(f"  [INFO] Scanning schedule for pending rides...")
     pending_rides = get_pending_rides()
 
     if not pending_rides:
