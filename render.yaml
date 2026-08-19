@@ -1,4 +1,5 @@
 services:
+  # TwiML voice webhook — Twilio fetches this during the call.
   - type: web
     name: mr-cabie-reminder
     runtime: python
@@ -8,3 +9,21 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.12"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # OPTIONAL: run the agent itself in the cloud (no laptop needed).
+  # Render Cron Jobs are a paid feature — if you're on the free tier, use the
+  # GitHub Actions workflow at .github/workflows/reminder-agent.yml instead.
+  #
+  # - type: cron
+  #   name: mr-cabie-agent
+  #   runtime: python
+  #   schedule: "*/5 * * * *"          # every 5 minutes
+  #   buildCommand: pip install -r requirements.txt
+  #   startCommand: python agent.py --once
+  #   envVars:
+  #     - key: PYTHON_VERSION
+  #       value: "3.12"
+  #     # Set the rest (TWILIO_*, RENDER_WEBHOOK_URL, GOOGLE_SHEET_ID,
+  #     # GOOGLE_SERVICE_ACCOUNT_JSON) as environment variables / secret files
+  #     # in the Render dashboard.

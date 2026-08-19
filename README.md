@@ -1,16 +1,16 @@
 # Mr. Cabie — Driver Pickup Reminder Agent (v1)
 
-An automated agent that reminds drivers about upcoming pickups by calling them 30 minutes before the scheduled pickup time via Twilio. It reads the driver schedule from an Excel sheet, makes the call, plays a voice reminder, updates the schedule, and logs the result.
+An automated agent that reminds drivers about upcoming pickups by calling them 30 minutes before the scheduled pickup time via Twilio. It reads the driver schedule from a Google Sheet, makes the call, plays a voice reminder, updates the sheet, and logs the result.
 
 ---
 
 ## How It Works
 
-1. **Agent reads the Excel sheet** every 60 seconds looking for rides with a pickup time approximately 30 minutes from now (within a 25–35 minute window).
+1. **Agent reads the Google Sheet** every 60 seconds looking for rides with a pickup time approximately 30 minutes from now (within a 25–35 minute window).
 2. **For each matching ride**, it triggers an outbound call via Twilio to the driver's phone number.
 3. **Twilio calls the driver** and plays a personalized voice message:
    > "Hello [Driver Name], this is an automated reminder from Mr. Cabie. You have a pickup scheduled at [Location] at [Time]. Please call or message your customer to confirm the pickup and make sure you reach the location on time. Thank you and drive safe."
-4. **Agent tracks the call status** — if completed, the Excel row status is updated to "Sent"; if unanswered, it is marked as "Failed - No Answer".
+4. **Agent tracks the call status** — if completed, the row's status is updated to "Sent"; if unanswered, it is marked as "Failed - No Answer". Only rows still marked `Pending` are picked up, so a driver is never called twice.
 5. **All call attempts are logged** in `call_logs.json`.
 
 ---
@@ -18,37 +18,40 @@ An automated agent that reminds drivers about upcoming pickups by calling them 3
 ## Architecture
 
 ```
-+--------------------------------------------------+
-|                  LOCAL MACHINE                   |
-|                                                  |
-|  +----------+     +---------------+              |
-|  |  Excel   |---->|   agent.py    |              |
-|  |  Sheet   |<----|  (Scheduler)  |              |
-|  +----------+     +-------+-------+              |
-|                           |                      |
-|                    Trigger Call                  |
-|                           |                      |
-+---------------------------+----------------------+
-                            |
-                            v
-                   +-----------------+
-                   |   Twilio API    |
-                   |  (Outbound Call)|
-                   +--------+--------+
-                            |
-              +-------------+-------------+
-              |                           |
-              v                           v
-     +-----------------+        +------------------+
-     | Driver's Phone  |<-------|   Render Server  |
-     +-----------------+ TwiML  |    (server.py)   |
-                         XML    |  /voice endpoint |
-                                +------------------+
+      +------------------+
+      |   Google Sheet   |   <-- the schedule (source of truth)
+      |  (Sheets API)    |
+      +--------+---------+
+          ^         |
+   update |         | read pending rides
+   status |         v
+      +---+------------------+
+      |      agent.py        |   runs on a schedule:
+      |     (Scheduler)      |   GitHub Actions cron (cloud)
+      +----------+-----------+   or locally for a demo
+                 |
+          Trigger Call
+                 v
+        +-----------------+
+        |   Twilio API    |
+        | (Outbound Call) |
+        +--------+--------+
+                 |
+       +---------+---------+
+       |                   |
+       v                   v
++----------------+   +------------------+
+| Driver's Phone |<--|   Render Server  |
++----------------+   |    (server.py)   |
+        TwiML XML    |  /voice endpoint |
+                     +------------------+
 ```
 
 **Split Deployment:**
-- `server.py`: Deployed on Render (Free tier) at `https://driver-pickup-reminder-agent.onrender.com` — serves TwiML voice XML.
-- `agent.py`: Runs locally — scans Excel, triggers Twilio calls, polls call status, updates sheet.
+- `server.py`: Deployed on Render (Free tier) at `https://driver-pickup-reminder-agent.onrender.com` — serves the TwiML voice XML that Twilio fetches during the call.
+- `agent.py`: Scans the sheet, triggers Twilio calls, polls call status, writes the status back. Runs via GitHub Actions cron in the cloud (see [Running in the Cloud](#running-in-the-cloud-no-laptop-needed)), or locally with `python agent.py` for a demo.
+
+Because the schedule *and* the reminder status both live in the Google Sheet, the agent keeps no local state — which is what lets it run as a short scheduled job instead of a process that must stay alive.
 
 ---
 
@@ -57,6 +60,7 @@ An automated agent that reminds drivers about upcoming pickups by calling them 3
 ### Prerequisites
 - Python 3.10+
 - A Twilio account (Account SID, Auth Token, and Twilio Phone Number)
+- A Google Sheet with the schedule, plus a Google Cloud service account (Step 3 below)
 
 ### Step 1: Virtual Environment Setup
 
@@ -80,24 +84,45 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### Step 3: Configure Environment Variables
+### Step 3: Google Sheets Setup
 
-Create or update the `.env` file in the root directory:
+The agent reads and writes a live Google Sheet, so it needs read/write access via a service account:
+
+1. In [Google Cloud Console](https://console.cloud.google.com/), create a project and **enable the Google Sheets API**.
+2. Create a **Service Account** → **Keys** → **Add Key → JSON**. Save the downloaded file as `service_account.json` in the project root.
+3. Open your Google Sheet → **Share** → add the service account's email (`name@project.iam.gserviceaccount.com`) as an **Editor**. Without this the agent gets a permission error.
+4. Copy the sheet ID from its URL: `https://docs.google.com/spreadsheets/d/`**`<SHEET_ID>`**`/edit`.
+5. Make sure the sheet has these columns, header in row 1, data from row 2:
+
+   | A | B | C | D | E |
+   |---|---|---|---|---|
+   | Driver Name | Driver Phone Number | Pickup Location | Scheduled Pickup Time | Reminder Status |
+
+> `service_account.json` holds a private key and is gitignored — never commit it.
+
+### Step 4: Configure Environment Variables
+
+Create or update the `.env` file in the root directory (template in `.env.example`):
 
 ```env
-TWILIO_ACCOUNT_SID=your_twilio_account_sid_here
+TWILIO_ACCOUNT_SID=your_account_sid_here
 TWILIO_AUTH_TOKEN=your_auth_token_here
-TWILIO_PHONE_NUMBER=your_twilio_phone_number_here
+TWILIO_PHONE_NUMBER=+17372508034
 RENDER_WEBHOOK_URL=https://driver-pickup-reminder-agent.onrender.com
-EXCEL_FILE_PATH=Sample_Driver_Pickup_Schedule V2.xlsx
+
+# Google Sheet (from Step 3)
+GOOGLE_SERVICE_ACCOUNT_JSON=service_account.json
+GOOGLE_SHEET_ID=your_sheet_id_here
+GOOGLE_WORKSHEET_NAME=          # blank = first worksheet
+
 CHECK_INTERVAL_SECONDS=60
 REMINDER_MINUTES_BEFORE=30
 ```
 
-### Step 4: Run the Agent
+### Step 5: Run the Agent
 
 ```bash
-venv\Scripts\activate
+# Ensure virtual environment is active
 python agent.py
 ```
 
@@ -111,7 +136,7 @@ Console Output Example:
 [SUCCESS] Configuration validated successfully.
 
 [CONFIG] Configuration Details:
-  Excel File     : Sample_Driver_Pickup_Schedule V2.xlsx
+  Google Sheet ID: 1AbC...xYz
   Webhook URL    : https://driver-pickup-reminder-agent.onrender.com
   Check Interval : 60 seconds
   Reminder Before: 30 minutes
@@ -124,7 +149,7 @@ Press Ctrl+C to stop.
 --------------------------------------------------------------
 Cycle #1 | 2026-08-19 00:05:06 IST
 --------------------------------------------------------------
-  [INFO] Scanning Excel for pending rides...
+  [INFO] Scanning Google Sheet for pending rides...
   [FOUND] 1 ride(s) due for reminder!
 
   [CALL] Initiating reminder for Mandeep Singh (+919971129359)
@@ -134,6 +159,27 @@ Cycle #1 | 2026-08-19 00:05:06 IST
        [INFO] Waiting for call status completion...
        [SUCCESS] Call completed — Reminder status set to 'Sent'
 ```
+
+---
+
+## Running in the Cloud (no laptop needed)
+
+`agent.py` supports a **single-cycle mode** so it can run on a scheduler instead of an always-on loop:
+
+```bash
+python agent.py --once   # scan once, act, then exit
+```
+
+**Why this matters:** the always-on loop only survives while your laptop is awake and the terminal is open. If the machine sleeps or the process dies, no driver gets called for that window — and nobody finds out. A cloud scheduler removes that single point of failure.
+
+**Free option — GitHub Actions** (included at `.github/workflows/reminder-agent.yml`): runs `--once` every 5 minutes.
+1. In your repo: **Settings → Secrets and variables → Actions**, add `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_PHONE_NUMBER`, `RENDER_WEBHOOK_URL`, `GOOGLE_SHEET_ID`, and `GOOGLE_SERVICE_ACCOUNT_JSON` (paste the whole JSON key).
+2. Enable Actions — the agent now runs in the cloud on schedule.
+3. Note: scheduled workflows only run on the repository's **default branch**.
+
+**Alternatives:** a Render Cron Job (paid — see the commented service in `render.yaml`), or your OS cron / Windows Task Scheduler calling `python agent.py --once`.
+
+> Each scheduled run happens on a fresh, throwaway machine — which is exactly why the status is written back to the Google Sheet rather than a local file. Nothing is kept on disk between runs.
 
 ---
 
@@ -147,14 +193,14 @@ If using a Twilio Free Trial account, Twilio only allows calling numbers that ha
 - Navigate to **Phone Numbers** > **Manage** > **Verified Caller IDs**.
 - Add your mobile phone number (e.g. `+919971129359`) and complete OTP verification.
 
-### 2. Update Excel Schedule for Testing
-- Open `Sample_Driver_Pickup_Schedule V2.xlsx`.
-- Select any row (or add a new row).
-- Set `Driver Phone Number` to your verified mobile number (format: `+91XXXXXXXXXX`).
-- Set `Scheduled Pickup Time` to **exactly 30 minutes from current local time (IST)**.
-  - *Example*: If current time is `10:15 AM`, set pickup time to `10:45 AM`.
-- Set `Reminder Status` to `Pending`.
-- Save the Excel file.
+### 2. Add a Test Row to the Google Sheet
+- Open your Google Sheet.
+- Add a row (or edit an existing one):
+  - `Driver Phone Number` → your verified mobile number (format: `+91XXXXXXXXXX`).
+  - `Scheduled Pickup Time` → **exactly 30 minutes from the current time (IST)**, e.g. `2026-08-19 10:45:00`.
+    - *Example*: if it's `10:15 AM`, set the pickup time to `10:45 AM`.
+  - `Reminder Status` → `Pending`.
+- No need to save — Google Sheets saves automatically, and the agent reads it live.
 
 ### 3. Start the Agent
 In your terminal, run:
@@ -167,7 +213,7 @@ python agent.py
 - Your mobile phone will ring from the configured `TWILIO_PHONE_NUMBER`.
 - Answer the call to listen to the automated text-to-speech message.
 - Check the terminal: output will show call initiation and status completion.
-- Open `Sample_Driver_Pickup_Schedule V2.xlsx`: `Reminder Status` for your row will now display `Sent`.
+- Watch the Google Sheet: `Reminder Status` for your row flips to `Sent` in real time.
 - Open `call_logs.json`: A complete audit entry will be recorded with timestamp, SID, and status.
 
 ---
@@ -182,11 +228,13 @@ mr cabie assignment/
 ├── .gitignore               # Version control exclusion file
 ├── requirements.txt         # Dependencies list
 ├── config.py                # Configuration loader and validator
-├── sheet_handler.py         # Excel schedule parser and status updater
+├── sheet_handler.py         # Google Sheets read/write + time-window logic
 ├── call_handler.py          # Twilio API integration & status polling
 ├── server.py                # Flask webhook server (deployed on Render)
-├── agent.py                 # Main scheduler agent loop
+├── agent.py                 # Main scheduler agent loop (supports --once)
 ├── call_logs.json           # Execution logs
+├── service_account.json     # Google service-account key (gitignored)
+├── .github/workflows/       # GitHub Actions cron (cloud scheduler)
 ├── Procfile                 # Deployment process file
 ├── render.yaml              # Render configuration file
 └── README.md                # Documentation
@@ -194,7 +242,9 @@ mr cabie assignment/
 
 ---
 
-## Excel Sheet Format
+## Google Sheet Format
+
+Header in row 1, data from row 2. Column order matters:
 
 | Driver Name | Driver Phone Number | Pickup Location | Scheduled Pickup Time | Reminder Status |
 |-------------|--------------------|-----------------|-----------------------|-----------------|
@@ -207,6 +257,10 @@ mr cabie assignment/
 - `Failed - No Answer`: Driver did not pick up the call.
 - `Failed - Busy`: Phone line was busy.
 - `Failed - Error`: Error during call dispatch.
+
+Only rows marked `Pending` are ever picked up, so a driver is never called twice for the same ride.
+
+`Scheduled Pickup Time` is read as IST. `YYYY-MM-DD HH:MM:SS` is the safest format; other common formats (e.g. `18/08/2026 21:39`) are parsed as day-first.
 
 ---
 
@@ -237,7 +291,7 @@ mr cabie assignment/
 | **Live Location Tracking** | Integrate GPS tracking to trigger reminders based on actual driver distance rather than fixed timing. |
 | **Escalation Management** | Automatically notify fleet managers if a driver fails to answer after multiple attempts. |
 | **Multi-channel Fallback** | Send WhatsApp/SMS notifications if an voice call goes unanswered. |
-| **Google Sheets API** | Synchronize directly with cloud Google Sheets instead of local Excel files. |
+| **Call Confirmation (DTMF)** | Let the driver press 1 to confirm / 2 to decline during the call, and record the response back to the sheet. |
 | **Analytics Dashboard** | Web dashboard for real-time monitoring of fleet call status. |
 
 ---

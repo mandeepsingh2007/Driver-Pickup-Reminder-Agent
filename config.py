@@ -17,8 +17,12 @@ TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER", "")
 # ─── Webhook URL (Render deployment) ───
 RENDER_WEBHOOK_URL = os.getenv("RENDER_WEBHOOK_URL", "http://localhost:5000")
 
-# ─── Excel File Path ───
-EXCEL_FILE_PATH = os.getenv("EXCEL_FILE_PATH", "Sample_Driver_Pickup_Schedule V2.xlsx")
+# ─── Google Sheets ───
+# The schedule lives in a live Google Sheet. Keeping the status in the cloud
+# (rather than a local file) is what lets the agent run on a cron schedule.
+GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "service_account.json")
+GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "")
+GOOGLE_WORKSHEET_NAME = os.getenv("GOOGLE_WORKSHEET_NAME", "")  # blank = first worksheet
 
 # ─── Agent Settings ───
 CHECK_INTERVAL_SECONDS = int(os.getenv("CHECK_INTERVAL_SECONDS", "60"))
@@ -44,6 +48,21 @@ def validate_config():
         raise ValueError(
             f"Missing required environment variables: {', '.join(missing)}\n"
             f"Please set them in your .env file. See .env.example for reference."
+        )
+
+    # Validate Google Sheets access
+    sheet_missing = []
+    if not GOOGLE_SHEET_ID:
+        sheet_missing.append("GOOGLE_SHEET_ID")
+    if not os.path.exists(GOOGLE_SERVICE_ACCOUNT_JSON):
+        sheet_missing.append(f"service account file '{GOOGLE_SERVICE_ACCOUNT_JSON}'")
+
+    if sheet_missing:
+        raise ValueError(
+            f"Google Sheets is not configured — missing: {', '.join(sheet_missing)}.\n"
+            "Create a Google Cloud service account, download its JSON key, "
+            "share the sheet with the service account email, and set "
+            "GOOGLE_SHEET_ID. See README > Google Sheets Setup."
         )
 
     return True

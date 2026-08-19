@@ -1,0 +1,27 @@
+# Virtual environment
+venv/
+
+# Environment variables
+.env
+
+# Google service account credentials (contains a private key — never commit)
+service_account.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs
+call_logs.json
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Task brief (not part of the deliverable)
+FO Intern Test Task_ Driver Pickup Reminder Agent.pdf

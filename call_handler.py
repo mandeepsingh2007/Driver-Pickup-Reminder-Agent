@@ -4,9 +4,32 @@ Triggers outbound calls and checks call status via Twilio API.
 """
 
 import time
+import urllib.request
 from urllib.parse import urlencode
 from twilio.rest import Client
 import config
+
+
+def warm_up_webhook(timeout=60):
+    """
+    Wake the webhook server before placing any calls.
+
+    Render's free tier spins the service down after ~15 minutes of inactivity,
+    and a cold start takes 30-60s. Twilio only waits ~15s for the TwiML
+    response, so a call placed against a sleeping server reaches the driver as
+    an error message instead of the reminder — while still being reported as
+    "completed". Waking the server first avoids that whole failure mode.
+
+    Returns:
+        bool: True if the webhook responded, False otherwise.
+    """
+    url = f"{config.RENDER_WEBHOOK_URL}/health"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            return 200 <= resp.status < 300
+    except Exception as e:
+        print(f"  [WARN] Webhook not reachable ({url}): {e}")
+        return False
 
 
 def get_twilio_client():
@@ -45,8 +68,6 @@ def make_reminder_call(driver_name, driver_phone, pickup_location, pickup_time_s
             to=driver_phone,
             from_=config.TWILIO_PHONE_NUMBER,
             url=voice_url,
-            method="POST",
-            timeout=30,  # Ring for 30 seconds before giving up
         )
         return call.sid
     except Exception as e:
@@ -71,6 +92,11 @@ def check_call_status(call_sid):
         call = client.calls(call_sid).fetch()
         return call.status
     except Exception as e:
+        # Do NOT assume the call succeeded here. Fabricating a "completed"
+        # status would mark genuinely unanswered/failed calls as "Sent" — the
+        # exact opposite of requirement #5 (log unanswered calls honestly).
+        # Fetching call status works fine on Twilio trial accounts, so any
+        # exception is a real error and is surfaced as such.
         print(f"  [ERROR] Failed to fetch call status for {call_sid}: {e}")
         return "error"
 
@@ -105,13 +131,13 @@ def wait_for_call_completion(call_sid, max_wait=120, poll_interval=5):
 
 def map_call_status_to_reminder_status(call_status):
     """
-    Map Twilio call status to our Excel reminder status string.
-    
+    Map Twilio call status to our sheet's reminder status string.
+
     Args:
         call_status (str): Twilio call status
-    
+
     Returns:
-        str: Reminder status for Excel
+        str: Reminder status to write into the sheet
     """
     status_map = {
         "completed": "Sent",

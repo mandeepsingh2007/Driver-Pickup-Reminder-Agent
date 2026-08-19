@@ -2,14 +2,15 @@
 Driver Pickup Reminder Agent — Main Scheduler (v1)
 
 This is the main entry point that runs locally. It:
-1. Reads the Excel sheet every CHECK_INTERVAL_SECONDS
+1. Reads the Google Sheet every CHECK_INTERVAL_SECONDS
 2. Finds rides with pickup time approximately 30 minutes from now
 3. Triggers Twilio calls for each matching ride
 4. Polls Twilio API for call completion status
-5. Updates the Excel sheet with the reminder status
+5. Updates the Google Sheet with the reminder status
 6. Logs all call attempts to call_logs.json
 """
 
+import argparse
 import json
 import os
 import signal
@@ -28,6 +29,7 @@ import config
 from sheet_handler import get_pending_rides, mark_reminder_status
 from call_handler import (
     make_reminder_call,
+    warm_up_webhook,
     wait_for_call_completion,
     map_call_status_to_reminder_status,
 )
@@ -81,7 +83,7 @@ def print_banner():
 def print_config():
     """Print current configuration."""
     print(f"{Fore.CYAN}[CONFIG] Configuration Details:{Style.RESET_ALL}")
-    print(f"  Excel File     : {config.EXCEL_FILE_PATH}")
+    print(f"  Google Sheet ID: {config.GOOGLE_SHEET_ID}")
     print(f"  Webhook URL    : {config.RENDER_WEBHOOK_URL}")
     print(f"  Check Interval : {config.CHECK_INTERVAL_SECONDS} seconds")
     print(f"  Reminder Before: {config.REMINDER_MINUTES_BEFORE} minutes")
@@ -139,7 +141,7 @@ def process_ride(ride):
     print(f"       {Fore.CYAN}[INFO] Waiting for call status completion...{Style.RESET_ALL}")
     final_status = wait_for_call_completion(call_sid)
 
-    # Step 3: Map status and update Excel
+    # Step 3: Map status and update the sheet
     reminder_status = map_call_status_to_reminder_status(final_status)
     mark_reminder_status(row_index, reminder_status)
 
@@ -183,8 +185,8 @@ def run_check_cycle(cycle_count):
     print(f"{Fore.CYAN}Cycle #{cycle_count} | {now.strftime('%Y-%m-%d %H:%M:%S IST')}{Style.RESET_ALL}")
     print(f"{Fore.CYAN}--------------------------------------------------------------{Style.RESET_ALL}")
 
-    # Read pending rides from Excel
-    print(f"  [INFO] Scanning Excel for pending rides...")
+    # Read pending rides from the Google Sheet
+    print(f"  [INFO] Scanning Google Sheet for pending rides...")
     pending_rides = get_pending_rides()
 
     if not pending_rides:
@@ -192,6 +194,14 @@ def run_check_cycle(cycle_count):
         return
 
     print(f"  {Fore.GREEN}[FOUND] {len(pending_rides)} ride(s) due for reminder!{Style.RESET_ALL}")
+
+    # Wake the webhook before dialling. A sleeping free-tier server would make
+    # Twilio time out and play an error message to the driver.
+    print(f"  [INFO] Warming up webhook server...")
+    if warm_up_webhook():
+        print(f"  {Fore.GREEN}[OK] Webhook is awake.{Style.RESET_ALL}")
+    else:
+        print(f"  {Fore.YELLOW}[WARN] Webhook did not respond — the driver may hear an error message.{Style.RESET_ALL}")
 
     # Process each ride
     for ride in pending_rides:
@@ -203,6 +213,18 @@ def run_check_cycle(cycle_count):
 def main():
     """Main entry point for the agent."""
     global running
+
+    parser = argparse.ArgumentParser(
+        description="Mr. Cabie — Driver Pickup Reminder Agent"
+    )
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Run a single check cycle and exit. Use this for cloud schedulers "
+             "(Render Cron, GitHub Actions, or OS cron/Task Scheduler) instead "
+             "of the always-on polling loop.",
+    )
+    args = parser.parse_args()
 
     # Register signal handler for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)
@@ -221,6 +243,17 @@ def main():
 
     # Print config summary
     print_config()
+
+    # Single-cycle mode — ideal for cloud cron schedulers (no laptop needed).
+    if args.once:
+        print(f"{Fore.GREEN}[RUNNING] Single-cycle mode (--once). Scanning once, then exiting.{Style.RESET_ALL}\n")
+        try:
+            run_check_cycle(1)
+        except Exception as e:
+            print(f"\n  {Fore.RED}[ERROR] Check cycle failed: {e}{Style.RESET_ALL}")
+            sys.exit(1)
+        print(f"\n{Fore.CYAN}[INFO] Single cycle complete. Exiting.{Style.RESET_ALL}\n")
+        return
 
     print(f"{Fore.GREEN}[RUNNING] Agent active. Polling schedule every {config.CHECK_INTERVAL_SECONDS} seconds.{Style.RESET_ALL}")
     print("Press Ctrl+C to stop.\n")

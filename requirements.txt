@@ -1,7 +1,11 @@
 twilio
 flask
 gunicorn
-openpyxl
 python-dotenv
 colorama
 tzdata
+# Google Sheets access
+gspread
+google-auth
+# Flexible pickup-time parsing for Google Sheets date strings
+python-dateutil

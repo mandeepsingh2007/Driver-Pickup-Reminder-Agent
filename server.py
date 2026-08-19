@@ -8,6 +8,7 @@ from the call URL and generates a personalized voice message.
 
 import os
 from flask import Flask, request, Response
+from twilio.twiml.voice_response import VoiceResponse
 
 app = Flask(__name__)
 
@@ -16,19 +17,24 @@ app = Flask(__name__)
 def voice():
     """
     Serve TwiML with a personalized driver reminder message.
-    
+
     Query Parameters:
         driver_name (str): Driver's name
         pickup_location (str): Pickup location
         pickup_time (str): Formatted pickup time
-    
+
     Returns:
-        TwiML XML response with <Say> verb
+        TwiML XML response with <Say> verbs.
+
+    Note: the message is built with Twilio's VoiceResponse helper rather than
+    an f-string template so that special characters in the driver name or
+    location (e.g. & or <) are XML-escaped automatically and can never break
+    the TwiML.
     """
     driver_name = request.args.get("driver_name", "Driver")
     pickup_location = request.args.get("pickup_location", "your pickup location")
     pickup_time = request.args.get("pickup_time", "the scheduled time")
-    
+
     message = (
         f"Hello {driver_name}, this is an automated reminder from Mr. Cabie. "
         f"You have a pickup scheduled at {pickup_location} at {pickup_time}. "
@@ -36,21 +42,18 @@ def voice():
         f"and make sure you reach the location on time. "
         f"Thank you and drive safe."
     )
-    
-    # Build TwiML response
-    twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Say voice="Polly.Aditi" language="en-IN">
-        {message}
-    </Say>
-    <Pause length="1"/>
-    <Say voice="Polly.Aditi" language="en-IN">
-        Once again, your pickup is at {pickup_location} at {pickup_time}. 
-        Please be on time. Thank you.
-    </Say>
-</Response>"""
-    
-    return Response(twiml, mimetype="application/xml")
+
+    response = VoiceResponse()
+    response.say(message, voice="Polly.Aditi", language="en-IN")
+    response.pause(length=1)
+    response.say(
+        f"Once again, your pickup is at {pickup_location} at {pickup_time}. "
+        f"Please be on time. Thank you.",
+        voice="Polly.Aditi",
+        language="en-IN",
+    )
+
+    return Response(str(response), mimetype="application/xml")
 
 
 @app.route("/health", methods=["GET"])
@@ -74,4 +77,7 @@ def index():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    # Debug is OFF by default. Enable locally with FLASK_DEBUG=true if needed;
+    # it must never be on in production (Render runs this via gunicorn anyway).
+    debug = os.environ.get("FLASK_DEBUG", "false").strip().lower() in ("1", "true", "yes")
+    app.run(host="0.0.0.0", port=port, debug=debug)
