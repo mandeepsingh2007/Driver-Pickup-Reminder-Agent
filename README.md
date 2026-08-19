@@ -100,7 +100,7 @@ Set `SHEET_BACKEND` in `.env` to pick where the schedule is read from. Everythin
 
 **Nothing to configure.** `Sample_Driver_Pickup_Schedule V2.xlsx` is committed to this repo, and `SHEET_BACKEND=excel` is the default — so you can clone, add your Twilio credentials, and run.
 
-Just edit the `.xlsx` in Excel / LibreOffice to add test rides. Remember to **save and close the file** before the agent's next cycle, since a file locked open by Excel can't be written to.
+Just edit the `.xlsx` in Excel / LibreOffice to add test rides, then **save and close the file**. While Excel holds the workbook open it is locked for writing, so the agent skips the cycle with a clear message rather than placing a call whose outcome it could not record.
 
 ---
 
@@ -338,3 +338,4 @@ Only rows marked `Pending` are ever picked up, so a driver is never called twice
 - **Reminder Window**: The agent scans for rides scheduled within a 25 to 35 minute window (target: 30 minutes before pickup).
 - **Trial Limitations**: Twilio trial accounts require recipient numbers to be registered in Verified Caller IDs.
 - **Webhook Warm-up**: Before dialling, the agent pings the Render `/health` endpoint so a sleeping free-tier server is awake by the time Twilio requests the TwiML.
+- **No Duplicate Calls**: The agent will not dial unless it can write the result back. If the schedule is locked (Excel open) it skips the cycle, and any row already dialled in the run is remembered — so a failed status write can never turn into the same driver being called every minute.

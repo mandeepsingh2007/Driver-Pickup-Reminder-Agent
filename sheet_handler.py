@@ -128,6 +128,31 @@ def _excel_get_pending_rides():
     return rides
 
 
+def _excel_can_write():
+    """
+    True if the Excel file can be written to right now.
+
+    Excel holds an exclusive lock on an open workbook, so the status
+    write-back would fail *after* the call was already placed, leaving the row
+    as "Pending" and causing the driver to be called again next cycle.
+    """
+    path = config.EXCEL_FILE_PATH
+    if not os.path.exists(path):
+        return False
+
+    # Excel drops a "~$name.xlsx" sidecar next to any workbook it has open.
+    directory, name = os.path.split(path)
+    if os.path.exists(os.path.join(directory, "~$" + name)):
+        return False
+
+    # And the workbook itself cannot be opened for writing while it is locked.
+    try:
+        with open(path, "r+b"):
+            return True
+    except OSError:
+        return False
+
+
 def _excel_mark_reminder_status(row_index, status):
     from openpyxl import load_workbook
 
@@ -200,6 +225,19 @@ def _google_mark_reminder_status(row_index, status):
 
 
 # ----------------------------- public API -----------------------------
+
+def can_write():
+    """
+    Whether the reminder status can be persisted right now.
+
+    The agent checks this before dialling: if the outcome cannot be recorded,
+    placing the call would only get the driver called again on every later
+    cycle.
+    """
+    if config.SHEET_BACKEND == "google":
+        return True  # no local lock; write errors are reported per call
+    return _excel_can_write()
+
 
 def get_pending_rides():
     """

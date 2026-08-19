@@ -26,7 +26,7 @@ if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
 
 import config
-from sheet_handler import get_pending_rides, mark_reminder_status
+from sheet_handler import get_pending_rides, mark_reminder_status, can_write
 from call_handler import (
     make_reminder_call,
     warm_up_webhook,
@@ -42,6 +42,11 @@ CALL_LOGS_FILE = "call_logs.json"
 
 # Graceful shutdown flag
 running = True
+
+# Rows already called during this run. A status write-back can still fail
+# (e.g. someone opens the Excel file mid-cycle), which would leave the row
+# "Pending" and get the driver called again on every later cycle.
+called_rows = set()
 
 
 def signal_handler(sig, frame):
@@ -120,6 +125,7 @@ def process_ride(ride):
 
     # Step 1: Make the call
     call_sid = make_reminder_call(driver_name, driver_phone, pickup_location, pickup_time_str)
+    called_rows.add(row_index)
 
     if not call_sid:
         # Call initiation failed
@@ -145,9 +151,13 @@ def process_ride(ride):
     print(f"       {Fore.CYAN}[INFO] Waiting for call status completion...{Style.RESET_ALL}")
     final_status = wait_for_call_completion(call_sid)
 
-    # Step 3: Map status and update the sheet
+    # Step 3: Map status and update the schedule
     reminder_status = map_call_status_to_reminder_status(final_status)
-    mark_reminder_status(row_index, reminder_status)
+    try:
+        mark_reminder_status(row_index, reminder_status)
+    except Exception as e:
+        print(f"       {Fore.RED}[ERROR] Could not write status to the schedule: {e}{Style.RESET_ALL}")
+        print(f"       {Fore.YELLOW}[INFO] Row {row_index} stays 'Pending'; this run will not call it again.{Style.RESET_ALL}")
 
     # Step 4: Log the result
     log_entry = {
@@ -197,7 +207,24 @@ def run_check_cycle(cycle_count):
         print(f"  [INFO] No rides due for reminder in current window.")
         return
 
+    # Drop rows already dialled in this run (see called_rows).
+    repeats = [r for r in pending_rides if r["row_index"] in called_rows]
+    pending_rides = [r for r in pending_rides if r["row_index"] not in called_rows]
+    if repeats:
+        print(f"  {Fore.YELLOW}[SKIP] {len(repeats)} ride(s) already called this run "
+              f"(status write-back failed).{Style.RESET_ALL}")
+    if not pending_rides:
+        return
+
     print(f"  {Fore.GREEN}[FOUND] {len(pending_rides)} ride(s) due for reminder!{Style.RESET_ALL}")
+
+    # Refuse to dial if the outcome cannot be recorded. Calling anyway would
+    # leave the row "Pending" and the driver would be called again and again.
+    if not can_write():
+        print(f"  {Fore.RED}[SKIP] Schedule is not writable right now - no calls placed.{Style.RESET_ALL}")
+        if config.SHEET_BACKEND == "excel":
+            print(f"  {Fore.YELLOW}       Close '{config.EXCEL_FILE_PATH}' in Excel and it will retry next cycle.{Style.RESET_ALL}")
+        return
 
     # Wake the webhook before dialling. A sleeping free-tier server would make
     # Twilio time out and play an error message to the driver.
